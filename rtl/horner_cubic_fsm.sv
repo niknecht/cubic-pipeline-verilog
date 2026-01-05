@@ -3,16 +3,16 @@
 `include "axi_stream_if.sv"
 
 module horner_cubic_stage_fsm #(
-    parameter signed [31:0] Mult,  // ISO 754 floating point
-    parameter signed [31:0] C
+    parameter signed [31:0] MULT,  // ISO 754 floating point
+    parameter signed [31:0] CONST
 ) (
     input rst,
     clk,
     axi_stream_if.slave prev,  // Slave to the previous
     axi_stream_if.master next  // Maaster to the next
 );
-  var real mult = real'(Mult);  // reinterpret_cast
-  var real c = real'(C);
+  var real mult = real'(MULT);  // reinterpret_cast
+  var real c = real'(CONST);
   real data, res;
   // Moore FSM for protocol
   typedef enum logic [1:0] {
@@ -59,10 +59,53 @@ module horner_cubic_stage_fsm #(
   end
 endmodule
 
+// Assembling the pipeline
 module horner_cubic_fsm #(
     parameter signed [31:0] A,
     parameter signed [31:0] B,
     parameter signed [31:0] C,
     parameter signed [31:0] D
-) ();
+) (
+    input clk,
+    rst,
+    axi_stream_if.slave tbab_in,
+    axi_stream_if.master cdtb_out
+);
+  axi_stream_if abbc_if (
+      .clk,
+      .rst
+  );
+  axi_stream_if bccd_if (
+      .rst,
+      .clk
+  );
+
+  horner_cubic_stage_fsm #(
+      .MULT (A),
+      .CONST(B)
+  ) ab (
+      .rst,
+      .clk,
+      .prev(tbab_in),
+      .next(abbc_if.master)
+  );
+  horner_cubic_stage_fsm #(
+      .MULT (1.0),
+      .CONST(C)
+  ) bc (
+      .clk,
+      .rst,
+      .prev(abbc_if.slave),
+      .next(bccd_if.master)
+  );
+  horner_cubic_stage_fsm #(
+      .MULT (1.0),
+      .CONST(D)
+  ) cd (
+      .clk,
+      .rst,
+      .prev(bccd_if.slave),
+      .next(cdtb_out)
+  );
+
 endmodule
