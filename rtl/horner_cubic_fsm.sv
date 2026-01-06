@@ -55,7 +55,7 @@ module horner_cubic_stage_fsm #(
   always_ff @(next.cb_master) begin  // Result accumulation here, if ready
     next.cb_master.TVALID <= (state == RES);
     next.cb_master.TDATA  <= (state == RES) ? res : 0;
-    next.cb_master.TLAST  <= '0;
+    next.cb_master.TLAST  <= (state == RES) ? prev.cb_slave.TLAST : '0;
   end
 endmodule
 

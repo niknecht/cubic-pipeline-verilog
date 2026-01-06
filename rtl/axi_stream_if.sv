@@ -28,4 +28,36 @@ interface axi_stream_if (
   // 2 communication paths, directions are inverted
   modport master(clocking cb_master);
   modport slave(clocking cb_slave);  // As seen from the interface
+
+
+  property valid_is_not_deasserted_untill_handshake;
+    @(posedge clk) disable iff (rst) TVALID && !TREADY |-> ##1 TVALID;
+  endproperty
+  assert property (valid_is_not_deasserted_untill_handshake);
+
+  property no_deadlock_before_handshake;
+    @(posedge clk) disable iff (rst) TVALID |-> ##[0:$] TREADY;
+  endproperty
+  assert property (no_deadlock_before_handshake);
+
+  property hold_backpressure;
+    @(posedge clk) disable iff (rst) TVALID && !TREADY |-> $stable(
+        TDATA
+    ) && $stable(
+        TLAST
+    );
+  endproperty
+  assert property (hold_backpressure);
+
+  property data_is_not_changed_once_valid_untill_handshake;
+    @(posedge clk) disable iff (rst) TVALID && !TREADY |-> $stable(
+        TDATA
+    );
+  endproperty
+
+  property valid_on_last;
+    @(posedge clk) disable iff (rst) TLAST |-> TVALID;
+  endproperty
+  assert property (valid_on_last);
+
 endinterface
