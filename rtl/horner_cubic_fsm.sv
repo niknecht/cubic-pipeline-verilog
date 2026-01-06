@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-`include "axi_stream_if.sv"
+`include "rtl/axi_stream_if.sv"
 
 module horner_cubic_stage_fsm #(
     parameter real MULT,  // ISO 754 floating point
@@ -28,9 +28,10 @@ module horner_cubic_stage_fsm #(
 
   state_t state, next_state;
 
-  always_comb begin
+  //always_comb begin // This is getting ridiculous
+  always @(*) begin
     next_state = state;
-    unique case (state)
+    case (state)  // Imposter: this actually has nothing to do with a latch
       IDLE: if (previ.TVALID) next_state = LOAD;
       LOAD: next_state = RES;
       RES:  if (nexti.TREADY) next_state = IDLE;
@@ -45,19 +46,19 @@ module horner_cubic_stage_fsm #(
 
   // Datapath
   // Output evaluation
-  always_comb begin
+  always @(*) begin
     data = 0;
     if ((state == IDLE) && previ.TVALID) data = $bitstoreal(previ.TDATA);
   end
-  always_comb begin
+  always @(*) begin
     res = 0;
     if (state == LOAD) res = data * mult + c;
   end
   // Output propagation
-  always_ff @(clk) begin  // Ready in wait, otherwise not
+  always_ff @(posedge clk) begin  // Ready in wait, otherwise not
     prevo.TREADY <= (state == IDLE);
   end
-  always_ff @(clk) begin  // Result accumulation here, if ready
+  always_ff @(posedge clk) begin  // Result accumulation here, if ready
     nexto.TVALID <= (state == RES);
     nexto.TDATA  <= (state == RES) ? $realtobits(res) : 0;
     nexto.TLAST  <= (state == RES) ? previ.TLAST : '0;
