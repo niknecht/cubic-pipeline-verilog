@@ -1,18 +1,23 @@
+`ifndef HORNER_CUBIC_FSM_SV
+`define HORNER_CUBIC_FSM_SV
+
 `timescale 1ns / 1ps
 
 `include "axi_stream_if.sv"
 
 module horner_cubic_stage_fsm #(
-    parameter signed [31:0] MULT,  // ISO 754 floating point
-    parameter signed [31:0] CONST
+    parameter real MULT,  // ISO 754 floating point
+    parameter real CONST
 ) (
     input rst,
     clk,
-    axi_stream_if.slave prev,  // Slave to the previous
-    axi_stream_if.master next  // Maaster to the next
+    input axi_stream_mastero_slavei_t previ,  // Slave to the previous
+    output axi_stream_masteri_slaveo_t prevo,
+    input axi_stream_masteri_slaveo_t nexti,
+    output axi_stream_mastero_slavei_t nexto  // Maaster to the next
 );
-  var real mult = real'(MULT);  // reinterpret_cast
-  var real c = real'(CONST);
+  var real mult = (MULT);  // reinterpret_cast
+  var real c = (CONST);
   real data, res;
   // Moore FSM for protocol
   typedef enum logic [1:0] {
@@ -26,9 +31,9 @@ module horner_cubic_stage_fsm #(
   always_comb begin
     next_state = state;
     unique case (state)
-      IDLE: if (prev.cb_slave.TVALID) next_state = LOAD;
+      IDLE: if (previ.TVALID) next_state = LOAD;
       LOAD: next_state = RES;
-      RES:  if (next.cb_master.TREADY) next_state = IDLE;
+      RES:  if (nexti.TREADY) next_state = IDLE;
     endcase
   end
 
@@ -41,44 +46,132 @@ module horner_cubic_stage_fsm #(
   // Datapath
   // Output evaluation
   always_comb begin
-    data = data;
-    if ((state == IDLE) && prev.cb_slave.TVALID) data = prev.cb_slave.TDATA;
+    data = 0;
+    if ((state == IDLE) && previ.TVALID) data = $bitstoreal(previ.TDATA);
   end
   always_comb begin
-    res = res;
+    res = 0;
     if (state == LOAD) res = data * mult + c;
   end
   // Output propagation
-  always_ff @(prev.cb_slave) begin  // Ready in wait, otherwise not
-    prev.cb_slave.TREADY <= (state == IDLE);
+  always_ff @(clk) begin  // Ready in wait, otherwise not
+    prevo.TREADY <= (state == IDLE);
   end
-  always_ff @(next.cb_master) begin  // Result accumulation here, if ready
-    next.cb_master.TVALID <= (state == RES);
-    next.cb_master.TDATA  <= (state == RES) ? res : 0;
-    next.cb_master.TLAST  <= (state == RES) ? prev.cb_slave.TLAST : '0;
+  always_ff @(clk) begin  // Result accumulation here, if ready
+    nexto.TVALID <= (state == RES);
+    nexto.TDATA  <= (state == RES) ? $realtobits(res) : 0;
+    nexto.TLAST  <= (state == RES) ? previ.TLAST : '0;
+    // Next has cb_master, prev has cb_slave, removed for verilator compatibility
   end
+
+  // Verification (Icarus has no property support, and no interface support,
+  // so this is the only way) (Verilator has no program and task support, so that is
+  // even worse)
+
+  reg tv_valid_d;
+  always @(posedge clk)
+    if (rst) tv_valid_d <= 0;
+    else tv_valid_d <= nexto.TVALID;
+  always @(posedge clk) begin
+    if (!rst && nexto.TVALID && !nexti.TREADY) begin
+      if (!tv_valid_d) $error("TVALID dropped before handshake");
+    end
+  end
+
+  // Delayed signal registers
+  reg [63:0] tdata_d;
+  reg tlast_d;
+  reg tvalid_and_not_ready_d;
+
+  // hold_beckpressure
+  always @(posedge clk) begin
+    if (rst) begin
+      tv_valid_d <= 0;
+    end else begin
+      tv_valid_d <= nexto.TVALID;
+      if (!rst && nexto.TVALID && !nexti.TREADY && !tv_valid_d) begin
+        $error("TVALID deasserted during backpressure at %0t", $time);
+      end
+    end
+  end
+
+  // data_is_not_changed_once_valid_untill_handshake
+  always @(posedge clk) begin
+    if (rst) begin
+      tdata_d <= 0;
+      tlast_d <= 0;
+    end else begin
+      tdata_d <= previ.TDATA;
+      tlast_d <= previ.TLAST;
+
+      if (!rst && nexto.TVALID && !nexti.TREADY) begin
+        if (tdata_d !== nexto.TDATA) $error("TDATA changed during backpressure");
+        if (tlast_d !== nexto.TLAST) $error("TLAST changed during backpressure");
+      end
+    end
+  end
+
+  // valid_on_last, the only slave-side check!
+  always @(posedge clk) begin
+    if (!rst && previ.TLAST && !previ.TVALID) begin
+      $error("TLAST without TVALID at %0t", $time);
+    end
+  end
+
+  // no_deadlock_before_handshake
+  reg [7:0] backpressure_count;
+  always @(posedge clk) begin
+    if (rst) begin
+      backpressure_count <= 0;
+    end else if (nexto.TVALID && !nexti.TREADY) begin
+      backpressure_count <= backpressure_count + 1;
+      if (backpressure_count > 100) begin  // Timeout
+        $error("Backpressure > 100 cycles at %0t", $time);
+        $finish;
+      end
+    end else begin
+      backpressure_count <= 0;
+    end
+  end
+
+  // Data transfer only on handshake
+  logic handshake_d, data_accepted_d;
+  always @(posedge clk) begin
+    if (rst) begin
+      handshake_d <= 0;
+      data_accepted_d <= 0;
+    end else begin
+      handshake_d <= nexto.TVALID && nexti.TREADY;
+      data_accepted_d <= handshake_d;  // Previous cycle's handshake
+
+      // No internal data change without handshake
+      if (!rst && !handshake_d && data_accepted_d !== 1'bx) begin
+        if (tdata_d != nexto.TDATA) $error("Data changed without handshake");
+      end
+    end
+  end
+
 endmodule
 
 // Assembling the pipeline
 module horner_cubic_fsm #(
-    parameter signed [31:0] A,
-    parameter signed [31:0] B,
-    parameter signed [31:0] C,
-    parameter signed [31:0] D
+    parameter real A,
+    parameter real B,
+    parameter real C,
+    parameter real D
 ) (
     input clk,
     rst,
-    axi_stream_if.slave tbab_in,
-    axi_stream_if.master cdtb_out
+    input axi_stream_mastero_slavei_t abtbi,  // Slave to the previous
+    output axi_stream_masteri_slaveo_t abtbo,
+    input axi_stream_masteri_slaveo_t cdtbi,
+    output axi_stream_mastero_slavei_t cdtbo  // Maaster to the next
 );
-  axi_stream_if abbc_if (
-      .clk,
-      .rst
-  );
-  axi_stream_if bccd_if (
-      .rst,
-      .clk
-  );
+  axi_stream_mastero_slavei_t abbco_bcabi;  // Slave to the previous
+  axi_stream_masteri_slaveo_t abbci_bcabo;  // Naming conv: masterview_slaveview
+
+  axi_stream_masteri_slaveo_t bccdi_cdbco;
+  axi_stream_mastero_slavei_t bccdo_cdbci;  // Maaster to the next
 
   horner_cubic_stage_fsm #(
       .MULT (A),
@@ -86,8 +179,10 @@ module horner_cubic_fsm #(
   ) ab (
       .rst,
       .clk,
-      .prev(tbab_in),
-      .next(abbc_if.master)
+      .previ(abtbi),
+      .prevo(abtbo),
+      .nexto(abbco_bcabi),  //master
+      .nexti(abbci_bcabo)
   );
   horner_cubic_stage_fsm #(
       .MULT (1.0),
@@ -95,8 +190,10 @@ module horner_cubic_fsm #(
   ) bc (
       .clk,
       .rst,
-      .prev(abbc_if.slave),
-      .next(bccd_if.master)
+      .previ(abbco_bcabi),  // slave
+      .prevo(abbci_bcabo),
+      .nexti(bccdi_cdbco),  // master
+      .nexto(bccdo_cdbci)
   );
   horner_cubic_stage_fsm #(
       .MULT (1.0),
@@ -104,8 +201,12 @@ module horner_cubic_fsm #(
   ) cd (
       .clk,
       .rst,
-      .prev(bccd_if.slave),
-      .next(cdtb_out)
+      .previ(bccdo_cdbci),  //slave
+      .prevo(bccdi_cdbco),  //all ports naming conv: thisview
+      .nexti(cdtbi),
+      .nexto(cdtbo)
   );
 
 endmodule
+
+`endif
