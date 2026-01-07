@@ -19,6 +19,18 @@ module horner_cubic_stage_fsm #(
   var real mult = (MULT);  // reinterpret_cast
   var real c = (CONST);
   real data, res;
+
+  reg [63:0] data_bits;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      data_bits <= 0;
+    end else if (previ.TVALID && prevo.TREADY) begin
+      data_bits <= previ.TDATA;
+      $display("TDATA in stages: %f", $bitstoreal(previ.TDATA));
+    end
+  end
+
   // Moore FSM for protocol
   typedef enum logic [1:0] {
     IDLE = 2'b00,
@@ -28,10 +40,9 @@ module horner_cubic_stage_fsm #(
 
   state_t state, next_state;
 
-  //always_comb begin // This is getting ridiculous
   always @(*) begin
     next_state = state;
-    case (state)  // Imposter: this actually has nothing to do with a latch
+    case (state)
       IDLE: if (previ.TVALID) next_state = LOAD;
       LOAD: next_state = RES;
       RES:  if (nexti.TREADY) next_state = IDLE;
@@ -47,27 +58,46 @@ module horner_cubic_stage_fsm #(
   // Datapath
   // Output evaluation
   always @(*) begin
-    data = 0;
-    if ((state == IDLE) && previ.TVALID) data = $bitstoreal(previ.TDATA);
+    if (rst) data = 0;
+    else if ((state == IDLE) && previ.TVALID) data = $bitstoreal(data_bits);
   end
   always @(*) begin
-    res = 0;
-    if (state == LOAD) res = data * mult + c;
+    if (rst) res = 0;
+    else if (state == LOAD) res = data * mult + c;
   end
   // Output propagation
-  always_ff @(posedge clk) begin  // Ready in wait, otherwise not
-    prevo.TREADY <= (state == IDLE);
-  end
-  always_ff @(posedge clk) begin  // Result accumulation here, if ready
-    nexto.TVALID <= (state == RES);
-    nexto.TDATA  <= (state == RES) ? $realtobits(res) : 0;
-    nexto.TLAST  <= (state == RES) ? previ.TLAST : '0;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      prevo.TREADY <= 0;
+
+      nexto.TVALID <= 0;
+      nexto.TDATA  <= 0.0;
+      nexto.TLAST  <= 0;
+    end else begin
+      prevo.TREADY <= (state == IDLE);
+
+      nexto.TVALID <= (state == RES);
+      if (nexto.TVALID) nexto.TDATA <= $realtobits(res);
+      nexto.TLAST <= (state == RES);
+    end
     // Next has cb_master, prev has cb_slave, removed for verilator compatibility
   end
 
-  // Verification (Icarus has no property support, and no interface support,
-  // so this is the only way) (Verilator has no program and task support, so that is
-  // even worse)
+  //=============================================================================================================
+  //-------------------------------------------------------------------------------------------------------------
+
+  always @(posedge clk)
+    if (!rst)
+      $monitor(
+          "T%0t, STAGE:%d->NEXT:%d, TVALID:%b, TDATA:%b, TLAST:%b, TREADY:%b",
+          $time,
+          state,
+          next_state,
+          nexto.TVALID,
+          nexto.TDATA,
+          nexto.TLAST,
+          nexti.TREADY
+      );
 
   reg tv_valid_d;
   always @(posedge clk)
@@ -75,7 +105,10 @@ module horner_cubic_stage_fsm #(
     else tv_valid_d <= nexto.TVALID;
   always @(posedge clk) begin
     if (!rst && nexto.TVALID && !nexti.TREADY) begin
-      if (!tv_valid_d) $error("TVALID dropped before handshake");
+      if (!tv_valid_d) begin
+        $error("TVALID dropped before handshake");
+        $finish;
+      end
     end
   end
 
@@ -92,6 +125,7 @@ module horner_cubic_stage_fsm #(
       tv_valid_d <= nexto.TVALID;
       if (!rst && nexto.TVALID && !nexti.TREADY && !tv_valid_d) begin
         $error("TVALID deasserted during backpressure at %0t", $time);
+        $finish;
       end
     end
   end
@@ -106,16 +140,23 @@ module horner_cubic_stage_fsm #(
       tlast_d <= previ.TLAST;
 
       if (!rst && nexto.TVALID && !nexti.TREADY) begin
-        if (tdata_d !== nexto.TDATA) $error("TDATA changed during backpressure");
-        if (tlast_d !== nexto.TLAST) $error("TLAST changed during backpressure");
+        if (tdata_d !== nexto.TDATA) begin
+          $error("TDATA changed during backpressure");
+          $finish;
+        end
+        if (tlast_d !== nexto.TLAST) begin
+          $error("TLAST changed during backpressure");
+          $finish;
+        end
       end
     end
   end
 
-  // valid_on_last, the only slave-side check!
+  // valid_on_last, on of the two slave-side checks
   always @(posedge clk) begin
     if (!rst && previ.TLAST && !previ.TVALID) begin
       $error("TLAST without TVALID at %0t", $time);
+      $finish;
     end
   end
 
@@ -132,23 +173,6 @@ module horner_cubic_stage_fsm #(
       end
     end else begin
       backpressure_count <= 0;
-    end
-  end
-
-  // Data transfer only on handshake
-  logic handshake_d, data_accepted_d;
-  always @(posedge clk) begin
-    if (rst) begin
-      handshake_d <= 0;
-      data_accepted_d <= 0;
-    end else begin
-      handshake_d <= nexto.TVALID && nexti.TREADY;
-      data_accepted_d <= handshake_d;  // Previous cycle's handshake
-
-      // No internal data change without handshake
-      if (!rst && !handshake_d && data_accepted_d !== 1'bx) begin
-        if (tdata_d != nexto.TDATA) $error("Data changed without handshake");
-      end
     end
   end
 

@@ -4,7 +4,7 @@
 `timescale 1ns / 1ps
 
 typedef struct packed {
-  logic [63:0] TDATA;
+  logic unsigned [63:0] TDATA;
   logic TVALID, TLAST;
 } axi_stream_mastero_slavei_t;
 typedef struct packed {logic TREADY;} axi_stream_masteri_slaveo_t;
@@ -14,7 +14,7 @@ interface axi_stream_if (
     rst
 );
   logic TLAST;  // This shall be set by the testbench
-  var logic [63:0] TDATA;  // Payload
+  var logic unsigned [63:0] TDATA;  // Payload
   var logic TREADY;  //Datapath sync (use in FSM would break axi)
   var logic TVALID;  // This and TLAST are FSM language
   //tuser is overflow, tid and others are ommited as allowed by the standard
