@@ -6,7 +6,7 @@
 `include "rtl/axi_stream_if.sv"
 
 module horner_cubic_stage_fsm #(
-    parameter real MULT,  // ISO 754 floating point
+    parameter real MULT,
     parameter real CONST
 ) (
     input rst,
@@ -16,17 +16,18 @@ module horner_cubic_stage_fsm #(
     input axi_stream_masteri_slaveo_t nexti,
     output axi_stream_mastero_slavei_t nexto  // Maaster to the next
 );
-  var real mult = (MULT);  // reinterpret_cast
-  var real c = (CONST);
-  real data, res;
-
   reg [63:0] data_bits;
+  reg [63:0] res_bits;
+  logic data_valid;
+  real res;
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      data_bits <= 0;
+      data_bits  <= 0;
+      data_valid <= 0;
     end else if (previ.TVALID && prevo.TREADY) begin
-      data_bits <= previ.TDATA;
+      data_bits  <= previ.TDATA;
+      data_valid <= previ.TVALID;
       $display("TDATA in stages: %f", $bitstoreal(previ.TDATA));
     end
   end
@@ -45,7 +46,8 @@ module horner_cubic_stage_fsm #(
     case (state)
       IDLE: if (previ.TVALID) next_state = LOAD;
       LOAD: next_state = RES;
-      RES:  if (nexti.TREADY) next_state = IDLE;
+      RES: if (nexti.TREADY) next_state = IDLE;
+      default: next_state = IDLE;
     endcase
   end
 
@@ -57,14 +59,21 @@ module horner_cubic_stage_fsm #(
 
   // Datapath
   // Output evaluation
-  always @(*) begin
-    if (rst) data = 0;
-    else if ((state == IDLE) && previ.TVALID) data = $bitstoreal(data_bits);
+  always_ff @(posedge clk) begin
+    if (rst) res_bits <= 0;
+    else if (state == LOAD && data_valid) begin
+      res_bits <= $realtobits($bitstoreal(data_bits) * MULT + CONST);
+      //$display("Computed %f * %f + %f as %f", $bitstoreal(data_bits), MULT, CONST, $bitstoreal(
+      //                                                                  res_bits));
+    end
   end
-  always @(*) begin
+  /*always @(*) begin // old
     if (rst) res = 0;
-    else if (state == LOAD) res = data * mult + c;
-  end
+    else if (state == LOAD) begin
+      res = $bitstoreal(data_bits) * MULT + CONST;
+      $display("Computed %f * %f + %f as %f", $bitstoreal(data_bits), MULT, CONST, res);
+    end
+  end*/  // old
   // Output propagation
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -77,7 +86,11 @@ module horner_cubic_stage_fsm #(
       prevo.TREADY <= (state == IDLE);
 
       nexto.TVALID <= (state == RES);
-      if (nexto.TVALID) nexto.TDATA <= $realtobits(res);
+      //if (nexto.TVALID) begin
+      nexto.TDATA  <= res_bits;
+      $display("Computed %f * %f + %f as %f", $bitstoreal(data_bits), MULT, CONST, $bitstoreal(
+                                                                                       res_bits));
+      //end
       nexto.TLAST <= (state == RES);
     end
     // Next has cb_master, prev has cb_slave, removed for verilator compatibility
