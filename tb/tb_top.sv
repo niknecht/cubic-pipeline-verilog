@@ -24,6 +24,7 @@ module tb_top;
   axi_stream_mastero_slavei_t tbabo;
   axi_stream_masteri_slaveo_t tbcdo;
   axi_stream_mastero_slavei_t tbcdi;
+  real x;
 
   horner_cubic_fsm #(
       .A(`TEST_A),  // Defined in a compiler directive
@@ -33,6 +34,7 @@ module tb_top;
   ) dut (
       .clk,
       .rst,
+      .x,
       .abtbi(tbabo),
       .abtbo(tbabi),
       .cdtbo(tbcdi),
@@ -62,9 +64,10 @@ module tb_top;
     @(posedge clk);
     $display("Beginning  tests");
     for (int test_i = 0; test_i < x_tests.size(); test_i++) begin
+      x = x_tests[test_i];
       //foreach (x_tests[i]) begin  // No support? <:(
       $display("Testing x=%f", x_tests[test_i]);
-      drive_x(x_tests[test_i]);
+      drive_init_res();
       check_result(x_tests[test_i]);
       short_reset();
     end
@@ -108,10 +111,10 @@ module tb_top;
         );
   endtask
 
-  task automatic drive_x(real x);
+  task automatic drive_init_res();
     tbabo.TVALID = 1;
     tbabo.TLAST  = 1;
-    tbabo.TDATA  = $realtobits(x);
+    tbabo.TDATA  = $realtobits(`TEST_A);
     $display("In drive_x translating TDATA before handshake: %f", $bitstoreal(tbabo.TDATA));
     @(posedge clk);
 
@@ -130,7 +133,7 @@ module tb_top;
     tbabo.TLAST  = 0;
     @(posedge clk);
   endtask
-  /*   tbabo.TDATA  <= $realtobits(x);
+  /*   tbabo.TDATA.res  <= $realtobits(x);
     tbabo.TVALID <= '1;
     tbabo.TLAST  <= '1;
     wait (tbabi.TREADY) @(posedge clk) tbabo.TVALID <= '0;

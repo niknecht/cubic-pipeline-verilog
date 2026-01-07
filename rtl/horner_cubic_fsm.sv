@@ -6,11 +6,11 @@
 `include "rtl/axi_stream_if.sv"
 
 module horner_cubic_stage_fsm #(
-    parameter real MULT,
     parameter real CONST
 ) (
     input rst,
     clk,
+    input real x,
     input axi_stream_mastero_slavei_t previ,  // Slave to the previous
     output axi_stream_masteri_slaveo_t prevo,
     input axi_stream_masteri_slaveo_t nexti,
@@ -19,7 +19,6 @@ module horner_cubic_stage_fsm #(
   reg [63:0] data_bits;
   reg [63:0] res_bits;
   logic data_valid;
-  real res;
 
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -62,7 +61,7 @@ module horner_cubic_stage_fsm #(
   always_ff @(posedge clk) begin
     if (rst) res_bits <= 0;
     else if (state == LOAD && data_valid) begin
-      res_bits <= $realtobits($bitstoreal(data_bits) * MULT + CONST);
+      res_bits <= $realtobits($bitstoreal(data_bits) * x + CONST);
       //$display("Computed %f * %f + %f as %f", $bitstoreal(data_bits), MULT, CONST, $bitstoreal(
       //                                                                  res_bits));
     end
@@ -88,8 +87,8 @@ module horner_cubic_stage_fsm #(
       nexto.TVALID <= (state == RES);
       //if (nexto.TVALID) begin
       nexto.TDATA  <= res_bits;
-      $display("Computed %f * %f + %f as %f", $bitstoreal(data_bits), MULT, CONST, $bitstoreal(
-                                                                                       res_bits));
+      $display("Computed %f * %f + %f as %f", $bitstoreal(data_bits), x, CONST, $bitstoreal(
+                                                                                    res_bits));
       //end
       nexto.TLAST <= (state == RES);
     end
@@ -200,6 +199,7 @@ module horner_cubic_fsm #(
 ) (
     input clk,
     rst,
+    input real x,
     input axi_stream_mastero_slavei_t abtbi,  // Slave to the previous
     output axi_stream_masteri_slaveo_t abtbo,
     input axi_stream_masteri_slaveo_t cdtbi,
@@ -212,33 +212,33 @@ module horner_cubic_fsm #(
   axi_stream_mastero_slavei_t bccdo_cdbci;  // Maaster to the next
 
   horner_cubic_stage_fsm #(
-      .MULT (A),
       .CONST(B)
   ) ab (
       .rst,
       .clk,
+      .x,
       .previ(abtbi),
       .prevo(abtbo),
       .nexto(abbco_bcabi),  //master
       .nexti(abbci_bcabo)
   );
   horner_cubic_stage_fsm #(
-      .MULT (1.0),
       .CONST(C)
   ) bc (
       .clk,
       .rst,
+      .x,
       .previ(abbco_bcabi),  // slave
       .prevo(abbci_bcabo),
       .nexti(bccdi_cdbco),  // master
       .nexto(bccdo_cdbci)
   );
   horner_cubic_stage_fsm #(
-      .MULT (1.0),
       .CONST(D)
   ) cd (
       .clk,
       .rst,
+      .x,
       .previ(bccdo_cdbci),  //slave
       .prevo(bccdi_cdbco),  //all ports naming conv: thisview
       .nexti(cdtbi),
