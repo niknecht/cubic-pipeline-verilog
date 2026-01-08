@@ -58,6 +58,7 @@ module tb_top;
     rst = 0;
   end
 
+  // Go over all test x values for the cooficients from the testvector
   real x_tests[] = `X_VALS;
   initial begin
     wait (!rst);
@@ -111,11 +112,14 @@ module tb_top;
         );
   endtask
 
+  // Feed A into the pipeline = stimilate the calculation
   task automatic drive_init_res();
     tbabo.TVALID = 1;
     tbabo.TLAST  = 1;
     tbabo.TDATA  = $realtobits(`TEST_A);
-    $display("In drive_x translating TDATA before handshake: %f", $bitstoreal(tbabo.TDATA));
+`ifdef DEBUG
+    $display("In drive_x tranmitting TDATA before handshake: %f", $bitstoreal(tbabo.TDATA));
+`endif
     @(posedge clk);
 
     /*do begin
@@ -126,9 +130,9 @@ module tb_top;
 
     @(posedge clk);
     while (!(tbabo.TVALID && tbabi.TREADY)) @(posedge clk);
-
-    $display("In drive_x translating TDATA after handshake: %f", $bitstoreal(tbabo.TDATA));
-
+`ifdef DEBUG
+    $display("In drive_x tranmitting TDATA after handshake: %f", $bitstoreal(tbabo.TDATA));
+`endif
     tbabo.TVALID = 0;
     tbabo.TLAST  = 0;
     @(posedge clk);
@@ -143,6 +147,7 @@ module tb_top;
     repeat (5) @(posedge clk);
   endtask
 
+`ifdef DEBUG
   always @(posedge clk) begin
     if (!rst) begin
       $monitor("T%0t TB->STAGE TVALID:%b, TREADY:%b, TLAST:%b, TDATA:%b", $time, tbabo.TVALID,
@@ -151,6 +156,6 @@ module tb_top;
                tbcdo.TREADY, tbcdi.TLAST, tbcdi.TDATA);
     end
   end
-
+`endif
 endmodule
 
